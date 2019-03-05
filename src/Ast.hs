@@ -136,6 +136,7 @@ eval_stmt' S_Skip store = Just store
 eval_stmt' (S_Assign id e) store =
     updateStore store id <$> eval_aexp e store
 eval_stmt' (S_Sequence stmts) store =
+    -- Rewrite this garbage
     foldl (\store' stmt -> store' >>= eval_stmt' stmt) (Just store) stmts
 eval_stmt' (S_If e s1 s2) store =
     do { b <- eval_bexp e store
