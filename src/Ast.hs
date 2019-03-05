@@ -15,6 +15,8 @@ module Ast
 , B_Comparator(..)
 ) where
 
+import Control.Monad
+
 type Identifier = String
 
 data Stmt
@@ -136,8 +138,7 @@ eval_stmt' S_Skip store = Just store
 eval_stmt' (S_Assign id e) store =
     updateStore store id <$> eval_aexp e store
 eval_stmt' (S_Sequence stmts) store =
-    -- Rewrite this garbage
-    foldl (\store' stmt -> store' >>= eval_stmt' stmt) (Just store) stmts
+    foldM (flip eval_stmt') store stmts
 eval_stmt' (S_If e s1 s2) store =
     do { b <- eval_bexp e store
        ; if b then eval_stmt' s1 store else eval_stmt' s2 store
