@@ -1,0 +1,2 @@
+assert(True, "Expected True");
+assert(False, "Expected False, this should blow up")

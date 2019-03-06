@@ -1,0 +1,14 @@
+n := 6;
+a := 0;
+b := 1;
+
+while (n > 0) {
+    n := n - 1;
+
+    // Store the next fib number in a temp
+    sum := a + b;
+    a := b;
+    b := sum;
+
+    print "Next fibonacci number:" a
+}

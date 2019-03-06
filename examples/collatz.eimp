@@ -1,0 +1,28 @@
+// Collatz conjecture function
+
+steps := 0;
+n := 100;
+
+print "Testing n =" n;
+
+while (n != 1) {
+    // Compute the parity in a really dumb way
+    //
+    // I should probably implement remainder
+    parity := n;
+    ndiv2 := 0;
+    while (parity > 1) {
+        parity := parity - 2;
+        ndiv2 := ndiv2 + 1
+    };
+    if (parity == 0) {
+        n := ndiv2
+    } else {
+        n := 3 * n + 1
+    };
+
+    steps := steps + 1;
+    print "n:" n
+};
+
+print "Reached 1 after this many steps:" steps
