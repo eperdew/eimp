@@ -24,6 +24,8 @@ dependencies:
 - megaparsec
 - parser-combinators
 - text
+- transformers
+- containers
 
 library:
   source-dirs: src

@@ -1,10 +1,9 @@
 module Ast
-( emptyStore
-, updateStore
-, eval_aexp
-, eval_bexp
-, eval_stmt
-, eval_stmt'
+( evalAexp
+, evalBexp
+, evalStmt
+, evalStmt'
+, Store
 , Stmt(..)
 , Aexp(..)
 , Bexp(..)
@@ -16,6 +15,9 @@ module Ast
 ) where
 
 import Control.Monad
+import Control.Monad.Trans.Maybe
+import Control.Monad.IO.Class
+import qualified Data.Map.Strict as Map
 
 type Identifier = String
 
@@ -25,6 +27,8 @@ data Stmt
     | S_Sequence [Stmt]
     | S_If Bexp Stmt Stmt
     | S_While Bexp Stmt
+    | S_Print String Aexp
+    | S_Assert Bexp String
     deriving (Show)
 
 data Aexp
@@ -96,52 +100,59 @@ boolComparatorToFunc B_GreaterEq     = (>=)
 boolComparatorToFunc B_ArithEqual    = (==)
 boolComparatorToFunc B_ArithNotEqual = (/=)
 
-type StoreKV k v = k -> Maybe v
-type Store = StoreKV String Integer
+type Store = Map.Map String Integer
 
-emptyStore :: StoreKV k v
-emptyStore _ = Nothing
-
-updateStore :: (Eq k) => StoreKV k v -> k -> v -> StoreKV k v
-updateStore s k v = \key -> if key == k then Just v else s key
-
-eval_aexp :: Aexp -> Store -> Maybe Integer
-eval_aexp (A_Int i)          _ = Just i
-eval_aexp (A_BinOp op e1 e2) s =
+evalAexp :: Aexp -> Store -> Maybe Integer
+evalAexp (A_Int i)          _ = Just i
+evalAexp (A_BinOp op e1 e2) s =
     arithBinopToFunc op
-    <$> eval_aexp e1 s
-    <*> eval_aexp e2 s
-eval_aexp (A_UnaryOp op e)   s =
+    <$> evalAexp e1 s
+    <*> evalAexp e2 s
+evalAexp (A_UnaryOp op e)   s =
     arithUnopToFunc  op
-    <$> eval_aexp e  s
-eval_aexp (A_Var id)         s = s id
+    <$> evalAexp e  s
+evalAexp (A_Var id)         s = Map.lookup id s
 
-eval_bexp :: Bexp -> Store -> Maybe Bool
-eval_bexp (B_Boolean b) _ = Just b
-eval_bexp (B_BinOp op b1 b2) s =
+evalBexp :: Bexp -> Store -> Maybe Bool
+evalBexp (B_Boolean b) _ = Just b
+evalBexp (B_BinOp op b1 b2) s =
     boolBinopToFunc op
-    <$> eval_bexp b1 s
-    <*> eval_bexp b2 s
-eval_bexp (B_UnaryOp op b) s =
+    <$> evalBexp b1 s
+    <*> evalBexp b2 s
+evalBexp (B_UnaryOp op b) s =
     boolUnopToFunc op
-    <$> eval_bexp b s
-eval_bexp (B_Comparison comp a1 a2) s =
+    <$> evalBexp b s
+evalBexp (B_Comparison comp a1 a2) s =
     boolComparatorToFunc comp
-    <$> eval_aexp a1 s
-    <*> eval_aexp a2 s
+    <$> evalAexp a1 s
+    <*> evalAexp a2 s
 
-eval_stmt :: Stmt -> Maybe Store
-eval_stmt s = eval_stmt' s emptyStore
+evalStmt :: Stmt -> MaybeT IO Store
+evalStmt s = evalStmt' s Map.empty
 
-eval_stmt' :: Stmt -> Store -> Maybe Store
-eval_stmt' S_Skip store = Just store
-eval_stmt' (S_Assign id e) store =
-    updateStore store id <$> eval_aexp e store
-eval_stmt' (S_Sequence stmts) store =
-    foldM (flip eval_stmt') store stmts
-eval_stmt' (S_If e s1 s2) store =
-    do { b <- eval_bexp e store
-       ; if b then eval_stmt' s1 store else eval_stmt' s2 store
+evalStmt' :: Stmt -> Store -> MaybeT IO Store
+evalStmt' S_Skip store = liftIO $ return store
+evalStmt' (S_Assign id e) store =
+    flip (Map.insert id) store <$>
+        (MaybeT . return $ evalAexp e store)
+evalStmt' (S_Sequence stmts) store =
+    foldM (flip evalStmt') store stmts
+evalStmt' (S_If e s1 s2) store =
+    do { b <- MaybeT . return $ evalBexp e store
+       ; if b then evalStmt' s1 store else evalStmt' s2 store
     }
-eval_stmt' (S_While e s) store =
-    eval_stmt' (S_If e (S_Sequence [s, S_While e s]) S_Skip) store
+evalStmt' (S_While e s) store =
+    evalStmt' (S_If e (S_Sequence [s, S_While e s]) S_Skip) store
+evalStmt' (S_Print s e) store =
+    do { a <- MaybeT . return $ evalAexp e store
+       ; liftIO $ print (s ++ " " ++ show a)
+       ; return store
+    }
+evalStmt' (S_Assert e s) store =
+    do { b <- (MaybeT . return $ evalBexp e store)
+       ; if b then
+            return store
+         else
+            MaybeT ((print $ ("Assertion failed: " ++ s))
+                >> return Nothing)
+       }
