@@ -2,157 +2,188 @@ module Ast
 ( evalAexp
 , evalBexp
 , evalStmt
-, evalStmt'
+, Result
+, ResultT
 , Store
 , Stmt(..)
 , Aexp(..)
 , Bexp(..)
-, A_BinaryOperator(..)
-, A_UnaryOperator(..)
-, B_BinaryOperator(..)
-, B_UnaryOperator(..)
-, B_Comparator(..)
+, ArithBinaryOperator(..)
+, ArithUnaryOperator(..)
+, BoolBinaryOperator(..)
+, BoolUnaryOperator(..)
+, Comparator(..)
+, RuntimeError(..)
 ) where
 
 import Control.Monad
-import Control.Monad.Trans.Maybe
+import Control.Monad.Except
 import Control.Monad.IO.Class
 import qualified Data.Map.Strict as Map
 
-type Identifier = String
-
-data Stmt
-    = S_Skip
-    | S_Assign Identifier Aexp
-    | S_Sequence [Stmt]
-    | S_If Bexp Stmt Stmt
-    | S_While Bexp Stmt
-    | S_Print String Aexp
-    | S_Assert Bexp String
-    deriving (Show)
-
-data Aexp
-    = A_Int Integer
-    | A_BinOp A_BinaryOperator Aexp Aexp
-    | A_UnaryOp A_UnaryOperator Aexp
-    | A_Var Identifier
-    deriving (Show, Eq)
-
-data Bexp
-    = B_Boolean Bool
-    | B_BinOp B_BinaryOperator Bexp Bexp
-    | B_UnaryOp B_UnaryOperator Bexp
-    | B_Comparison B_Comparator Aexp Aexp
-    deriving (Show)
-
-data A_BinaryOperator
-    = A_Plus
-    | A_Minus
-    | A_Times
-    deriving (Show, Eq)
-
-data A_UnaryOperator
-    = A_Negate
-    deriving (Show, Eq)
-
-data B_BinaryOperator
-    = B_And
-    | B_Or
-    | B_BoolEqual
-    | B_BoolNotEqual
-    deriving (Show, Eq)
-
-data B_UnaryOperator
-    = B_Not
-    deriving (Show, Eq)
-
-data B_Comparator
-    = B_Less
-    | B_LessEq
-    | B_Greater
-    | B_GreaterEq
-    | B_ArithEqual
-    | B_ArithNotEqual
-    deriving (Show, Eq)
-
-arithBinopToFunc :: A_BinaryOperator -> Integer -> Integer -> Integer
-arithBinopToFunc A_Plus   = (+)
-arithBinopToFunc A_Minus  = (-)
-arithBinopToFunc A_Times  = (*)
-
-arithUnopToFunc :: A_UnaryOperator -> Integer -> Integer
-arithUnopToFunc A_Negate = (0-)
-
-boolBinopToFunc :: B_BinaryOperator -> Bool -> Bool -> Bool
-boolBinopToFunc B_And          = (&&)
-boolBinopToFunc B_Or           = (||)
-boolBinopToFunc B_BoolEqual    = (==)
-boolBinopToFunc B_BoolNotEqual = (/=)
-
-boolUnopToFunc :: B_UnaryOperator -> Bool -> Bool
-boolUnopToFunc B_Not = not
-
-boolComparatorToFunc :: B_Comparator -> Integer -> Integer -> Bool
-boolComparatorToFunc B_Less          = (<)
-boolComparatorToFunc B_LessEq        = (<=)
-boolComparatorToFunc B_Greater       = (>)
-boolComparatorToFunc B_GreaterEq     = (>=)
-boolComparatorToFunc B_ArithEqual    = (==)
-boolComparatorToFunc B_ArithNotEqual = (/=)
-
-type Store = Map.Map String Integer
-
-evalAexp :: Aexp -> Store -> Maybe Integer
-evalAexp (A_Int i)          _ = Just i
-evalAexp (A_BinOp op e1 e2) s =
-    arithBinopToFunc op
-    <$> evalAexp e1 s
-    <*> evalAexp e2 s
-evalAexp (A_UnaryOp op e)   s =
-    arithUnopToFunc  op
-    <$> evalAexp e  s
-evalAexp (A_Var id)         s = Map.lookup id s
-
-evalBexp :: Bexp -> Store -> Maybe Bool
-evalBexp (B_Boolean b) _ = Just b
-evalBexp (B_BinOp op b1 b2) s =
-    boolBinopToFunc op
-    <$> evalBexp b1 s
-    <*> evalBexp b2 s
-evalBexp (B_UnaryOp op b) s =
-    boolUnopToFunc op
-    <$> evalBexp b s
-evalBexp (B_Comparison comp a1 a2) s =
-    boolComparatorToFunc comp
-    <$> evalAexp a1 s
-    <*> evalAexp a2 s
-
-evalStmt :: Stmt -> MaybeT IO Store
-evalStmt s = evalStmt' s Map.empty
-
-evalStmt' :: Stmt -> Store -> MaybeT IO Store
-evalStmt' S_Skip store = liftIO $ return store
-evalStmt' (S_Assign id e) store =
-    flip (Map.insert id) store <$>
-        (MaybeT . return $ evalAexp e store)
-evalStmt' (S_Sequence stmts) store =
-    foldM (flip evalStmt') store stmts
-evalStmt' (S_If e s1 s2) store =
-    do { b <- MaybeT . return $ evalBexp e store
-       ; if b then evalStmt' s1 store else evalStmt' s2 store
+-- Main interpreter - evaluates a (complex) statement in a particular store
+evalStmt :: Store -> Stmt -> ResultT IO Store
+    -- We're slightly careful here to make sure this is tail recursive
+    -- Of note, only a few of these make recursive calls to evalStmt
+evalStmt store Skip = liftIO $ return store
+evalStmt store (Assign id e) =
+    Map.insert id `flip` store <$>
+        (hoistResult $ evalAexp store e)
+evalStmt store (Sequence stmts) =
+    -- By representing a sequence as a list, we can just do a foldM to thread the store
+    -- through.
+    foldM evalStmt store stmts
+evalStmt store (If e s1 s2) =
+    do { b <- hoistResult $ evalBexp store e
+       ; if b then evalStmt store s1
+         else      evalStmt store s2
     }
-evalStmt' (S_While e s) store =
-    evalStmt' (S_If e (S_Sequence [s, S_While e s]) S_Skip) store
-evalStmt' (S_Print s e) store =
-    do { a <- MaybeT . return $ evalAexp e store
+evalStmt store (While e s) =
+    -- while (b) { s } == if (b) { s; while (b) { s } } else { skip }
+    evalStmt store $ If e (Sequence [s, While e s]) Skip
+
+-- These two cases represent debug features
+evalStmt store (Print s e) =
+    do { a <- hoistResult $ evalAexp store e
        ; liftIO $ print (s ++ " " ++ show a)
        ; return store
     }
-evalStmt' (S_Assert e s) store =
-    do { b <- (MaybeT . return $ evalBexp e store)
-       ; if b then
-            return store
-         else
-            MaybeT ((print $ ("Assertion failed: " ++ s))
-                >> return Nothing)
-       }
+evalStmt store (Assert e s) =
+    do { b <- (hoistResult $ evalBexp store e)
+       ; if b then return store
+         else throwError $ AssertionFailed e
+    }
+
+-- Evaluates an arithmetic expression in a store
+-- May return an UnboundVariable RuntimeError
+evalAexp :: Store -> Aexp -> Result Integer
+evalAexp _ (Int i) = return i
+evalAexp s (ArithBinOp op e1 e2) =
+    arithBinopToFunc op
+    <$> evalAexp s e1
+    <*> evalAexp s e2
+evalAexp s (ArithUnaryOp op e) =
+    arithUnopToFunc  op
+    <$> evalAexp s e
+evalAexp s (Var id) = case Map.lookup id s of
+    Nothing -> Left $ UnboundVariable id
+    Just i  -> return i
+
+-- Evaluates a boolean expression in a store
+-- May return an UnboundVariable RuntimeError
+evalBexp :: Store -> Bexp -> Result Bool
+evalBexp _ (Boolean b) = return b
+evalBexp s (BoolBinOp op b1 b2) =
+    boolBinopToFunc op
+    <$> evalBexp s b1
+    <*> evalBexp s b2
+evalBexp s (BoolUnaryOp op b) =
+    boolUnopToFunc op
+    <$> evalBexp s b
+evalBexp s (Comparison comp a1 a2) =
+    boolComparatorToFunc comp
+    <$> evalAexp s a1
+    <*> evalAexp s a2
+
+-- Main types used by the interpreter
+type Identifier = String
+type Store = Map.Map String Integer
+type Result a = Either RuntimeError a
+type ResultT m a = ExceptT RuntimeError m a
+
+hoistResult :: Monad m => Result a -> ResultT m a
+hoistResult = ExceptT . return
+
+-- Ast defintions
+data Stmt
+    = Skip
+    | Assign Identifier Aexp
+    | Sequence [Stmt]
+    | If Bexp Stmt Stmt
+    | While Bexp Stmt
+    | Print String Aexp
+    | Assert Bexp String
+    deriving (Show)
+
+-- Arithmetic expressions
+data Aexp
+    = Int Integer
+    | ArithBinOp ArithBinaryOperator Aexp Aexp
+    | ArithUnaryOp ArithUnaryOperator Aexp
+    | Var Identifier
+    deriving (Show, Eq)
+
+-- Boolean expressions
+data Bexp
+    = Boolean Bool
+    | BoolBinOp BoolBinaryOperator Bexp Bexp
+    | BoolUnaryOp BoolUnaryOperator Bexp
+    | Comparison Comparator Aexp Aexp
+    deriving (Show)
+
+-- Operators
+data ArithBinaryOperator
+    = Plus
+    | Minus
+    | Times
+    | Div
+    | Mod
+    deriving (Show, Eq)
+
+data ArithUnaryOperator
+    = Negate
+    deriving (Show, Eq)
+
+data BoolBinaryOperator
+    = And
+    | Or
+    | BoolEqual
+    | BoolNotEqual
+    deriving (Show, Eq)
+
+data BoolUnaryOperator
+    = Not
+    deriving (Show, Eq)
+
+data Comparator
+    = Less
+    | LessEq
+    | Greater
+    | GreaterEq
+    | ArithEqual
+    | ArithNotEqual
+    deriving (Show, Eq)
+
+-- Error types encountered during evaluation
+data RuntimeError
+    = UnboundVariable Identifier
+    | AssertionFailed Bexp
+    deriving (Show)
+
+-- Functions to lift syntactic operators into functions
+arithBinopToFunc :: ArithBinaryOperator -> Integer -> Integer -> Integer
+arithBinopToFunc Plus  = (+)
+arithBinopToFunc Minus = (-)
+arithBinopToFunc Times = (*)
+arithBinopToFunc Div   = div
+arithBinopToFunc Mod   = mod
+
+arithUnopToFunc :: ArithUnaryOperator -> Integer -> Integer
+arithUnopToFunc Negate = (0-)
+
+boolBinopToFunc :: BoolBinaryOperator -> Bool -> Bool -> Bool
+boolBinopToFunc And          = (&&)
+boolBinopToFunc Or           = (||)
+boolBinopToFunc BoolEqual    = (==)
+boolBinopToFunc BoolNotEqual = (/=)
+
+boolUnopToFunc :: BoolUnaryOperator -> Bool -> Bool
+boolUnopToFunc Not = not
+
+boolComparatorToFunc :: Comparator -> Integer -> Integer -> Bool
+boolComparatorToFunc Less          = (<)
+boolComparatorToFunc LessEq        = (<=)
+boolComparatorToFunc Greater       = (>)
+boolComparatorToFunc GreaterEq     = (>=)
+boolComparatorToFunc ArithEqual    = (==)
+boolComparatorToFunc ArithNotEqual = (/=)
