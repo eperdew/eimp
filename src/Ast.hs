@@ -131,7 +131,8 @@ data ArithBinaryOperator
     deriving (Show, Eq)
 
 data ArithUnaryOperator
-    = Negate
+    = Identity
+    | Negate
     deriving (Show, Eq)
 
 data BoolBinaryOperator
@@ -169,7 +170,8 @@ arithBinopToFunc Div   = div
 arithBinopToFunc Mod   = mod
 
 arithUnopToFunc :: ArithUnaryOperator -> Integer -> Integer
-arithUnopToFunc Negate = (0-)
+arithUnopToFunc Identity = id
+arithUnopToFunc Negate   = (0-)
 
 boolBinopToFunc :: BoolBinaryOperator -> Bool -> Bool -> Bool
 boolBinopToFunc And          = (&&)

@@ -135,7 +135,8 @@ pAexp = makeExprParser pArithTerm arithOperatorTable
 
 arithOperatorTable :: [[Operator Parser Aexp]]
 arithOperatorTable =
-  [ [ prefix "-" (ArithUnaryOp Negate) ]
+  [ [ prefix "-" (ArithUnaryOp Negate)
+    , prefix "+" (ArithUnaryOp Identity) ]
   , [ binary "*" (ArithBinOp Times)
     , binary "/" (ArithBinOp Div)
     , binary "%" (ArithBinOp Mod) ]
