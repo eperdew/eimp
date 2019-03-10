@@ -1,7 +1,11 @@
+x: int;
+y: int;
+oldx: int;
+
 x := 1;
 y := 2;
 oldx := x;
 x := y;
 y := oldx;
 assert(y == 1, "y should be 1");
-assert(x == 2, "x should be 2")
+assert(x == 2, "x should be 2");

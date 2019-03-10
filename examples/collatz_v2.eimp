@@ -1,21 +1,21 @@
 // Collatz conjecture function
 
+steps: int;
+n: int;
+
 steps := 0;
 n := 12345678;
 
 print "Testing n =" n;
 
 while (n != 1) {
-    // Compute the parity in a really dumb way
-    //
-    // I should probably implement remainder
     if (n % 2 == 0) {
-        n := n / 2
+        n := n / 2;
     } else {
-        n := 3 * n + 1
-    };
+        n := 3 * n + 1;
+    }
 
-    steps := steps + 1
-};
+    steps := steps + 1;
+}
 
-print "Reached 1 after this many steps:" steps
+print "Reached 1 after this many steps: " steps;

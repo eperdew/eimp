@@ -1,7 +1,9 @@
+x : int;
+y : int;
 x := 1;
 if (x == 1) {
-    y := 1
+    y := 1;
 } else {
-    y := 0
-};
-print "Y is" y
+    y := 0;
+}
+print "Y is " y;

@@ -1,0 +1,17 @@
+test: bool;
+x: int;
+
+x := -1;
+
+if (x < 0) {
+    test := True;
+    if (test) {
+        test := False;
+    } else {
+        test := True;
+    }
+} else {
+    skip;
+}
+
+assert(test == False, "Test should be false");

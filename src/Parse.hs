@@ -1,16 +1,18 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Parse
-( pAexp
-, pBexp
+( pRvalue
 , pStmt
-, printStore
 , parseFile
+, parseTestFile
 , parseAndShowFile
+, parseAndTypecheckFile
 , evalFile
 ) where
 
 import Ast
+import Types
+import Eval
 import Text.Megaparsec
 import Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
@@ -28,121 +30,179 @@ type StmtParseError = ParseErrorBundle Text Void
 
 {- Main interesting functions to call from the top level -}
 
-parseFile :: FilePath -> ExceptT StmtParseError IO Stmt
+parseTestFile :: FilePath -> IO ()
+parseTestFile filename = TextIO.readFile filename >>= parseTest pFile
+
+parseFile :: FilePath -> ExceptT StmtParseError IO (Stmt ())
 parseFile filename =
     ExceptT $
         TextIO.readFile filename
-            >>= return . parse (pStmt <* eof) filename
+            >>= return . parse pFile filename
 
-printStore :: ResultT IO Store -> IO ()
-printStore maybeStore = runExceptT maybeStore >>= print
+printContext :: ResultT IO Context -> IO ()
+printContext maybeCtx = runExceptT maybeCtx >>= print
 
 parseAndShowFile :: FilePath -> IO ()
 parseAndShowFile filename =
     let parsedFile = parseFile filename in
     runExceptT parsedFile >>= print
 
+parseAndTypecheckFile :: FilePath -> IO ()
+parseAndTypecheckFile filename =
+    let parsedFile = parseFile filename in
+    let typecheckedStmt = typecheckStmt Map.empty <$> parsedFile in
+    join (print <$> runExceptT typecheckedStmt)
+
 evalFile :: FilePath -> IO ()
 evalFile filename =
-    let parsedFile = parseFile filename in
-    let evaledStmt = (printStore . (evalStmt Map.empty)) <$> parsedFile in
-    runExceptT evaledStmt >>=
-        fromRight (putStrLn "Failed to parse")
+    let parsedFileIO = runExceptT $ parseFile filename in
+    parsedFileIO >>= \parsedFile -> case parsedFile of
+      Left error -> putStrLn "Failed to parse"
+      Right stmt ->
+        let typedResult = typecheckStmt Map.empty stmt in
+        case typedResult of
+          Left error -> print error
+          Right (typedStmt, _) ->
+            let evalResult = evalStmt emptyContext typedStmt in
+            (runExceptT evalResult) >>= print
+
+pFile :: Parser (Stmt ())
+pFile = sc *> pStmt <* eof
 
 {- Statement parsers -}
 
 -- The top level parser for statements
-pStmt :: Parser Stmt
+pStmt :: Parser (Stmt ())
 pStmt = pSequence
   <?> "statement"
 
 -- A simple statement is any statement other than a sequence
-pSimpleStmt :: Parser Stmt
+pSimpleStmt :: Parser (Stmt ())
 pSimpleStmt = lexeme $ choice
     [ try pSkip
     , try pPrint
     , try pAssert
+    , try pDeclaration
     , try pAssign
     , try pIf
     , try pWhile ]
 
 -- A sequence is one or more statements separated by ';'
-pSequence :: Parser Stmt
+pSequence :: Parser (Stmt ())
 pSequence =
-  Sequence <$> (sepBy1 (sc >> pSimpleStmt) ";" <?> "sequence")
+  Sequence () <$> some pSimpleStmt <?> "sequence"
 
-pSkip :: Parser Stmt
-pSkip = Skip <$ (lexeme $ string "skip")
+pSkip :: Parser (Stmt ())
+pSkip = do { symbol "skip"
+           ; symbol ";"
+           ; return $ Skip () } <?> "skip"
 
-pAssign :: Parser Stmt
+pDeclaration :: Parser (Stmt ())
+pDeclaration =
+  do { id <- pRawIdentifier
+     ; symbol ":"
+     ; t <- pType
+     ; symbol ";"
+     ; return $ Declaration () id t
+  } <?> "declaration"
+
+pType :: Parser Type
+pType = lexeme $ choice
+  [ IntegerT <$ symbol "int"
+  , BooleanT <$ symbol "bool" ]
+
+pAssign :: Parser (Stmt ())
 pAssign =
   do { id <- pRawIdentifier
-     ; lexeme $ string ":="
-     ; e <- pAexp
-     ; return $ Assign id e
+     ; symbol ":="
+     ; e <- pRvalue
+     ; symbol ";"
+     ; return $ Assign () id e
   } <?> "assignment"
 
-pIf :: Parser Stmt
+pIf :: Parser (Stmt ())
 pIf =
-  do { lexeme $ string "if"
-     ; b <- lexeme $ parens pBexp
+  do { symbol "if"
+     ; b <- lexeme $ parens pRvalue
      ; s1 <- lexeme $ braces pStmt
-     ; lexeme $ string "else"
+     ; symbol "else"
      ; s2 <- lexeme $ braces pStmt
-     ; return $ If b s1 s2
+     ; return $ If () b s1 s2
   } <?> "if statement"
 
-pWhile :: Parser Stmt
+pWhile :: Parser (Stmt ())
 pWhile =
-  do { lexeme $ string "while"
-     ; b <- lexeme $ parens pBexp
+  do { symbol "while"
+     ; b <- lexeme $ parens pRvalue
      ; s <- lexeme $ braces pStmt
-     ; return $ While b s
+     ; return $ While () b s
   } <?> "while statement"
 
-pPrint :: Parser Stmt
+pPrint :: Parser (Stmt ())
   -- The print syntax is a little wonky right now
   -- TODO: Make this less wonky
 pPrint =
-  do { lexeme $ string "print"
+  do { symbol "print"
      ; s <- stringLiteral
-     ; a <- pAexp
-     ; return $ Print s a
+     ; a <- pRvalue
+     ; symbol ";"
+     ; return $ Print () s a
   } <?> "print statement"
 
-pAssert :: Parser Stmt
+pAssert :: Parser (Stmt ())
 pAssert =
-  do { lexeme $ string "assert"
-     ; lexeme $ string "("
-     ; b <- pBexp
-     ; lexeme $ string ","
+  do { symbol "assert"
+     ; symbol "("
+     ; b <- pRvalue
+     ; symbol ","
      ; s <- stringLiteral
-     ; lexeme $ string ")"
-     ; return $ Assert b s
+     ; symbol ")"
+     ; symbol ";"
+     ; return $ Assert () b s
   } <?> "assertion"
 
 {- Arithmetic expression parsers -}
 
-pArithTerm :: Parser Aexp
-pArithTerm = choice
-  [ parens pAexp
-  , pIdentifier
-  , pInt ]
+pRvalue :: Parser (Rvalue ())
+pRvalue = lexeme (makeExprParser pRvalueTerm rvalueOperatorTable)
+  <?> "rvalue"
 
-pAexp :: Parser Aexp
-pAexp = makeExprParser pArithTerm arithOperatorTable
-  <?> "arithmetic expression"
+pRvalueTerm :: Parser (Rvalue ())
+pRvalueTerm = choice
+  [ pInt
+  , pBool
+  , pVar
+  , parens pRvalue ]
 
-arithOperatorTable :: [[Operator Parser Aexp]]
-arithOperatorTable =
-  [ [ prefix "-" (ArithUnaryOp Negate)
-    , prefix "+" (ArithUnaryOp Identity) ]
-  , [ binary "*" (ArithBinOp Times)
-    , binary "/" (ArithBinOp Div)
-    , binary "%" (ArithBinOp Mod) ]
-  , [ binary "+" (ArithBinOp Plus)
-    , binary "-" (ArithBinOp Minus) ]
-  ]
+pInt :: Parser (Rvalue ())
+pInt = Int () <$> integer <?> "int"
+
+pBool :: Parser (Rvalue ())
+pBool = choice
+  [ Boolean () True  <$ symbol "True"
+  , Boolean () False <$ symbol "False" ]
+
+pVar :: Parser (Rvalue ())
+pVar = Var () <$> pRawIdentifier
+
+rvalueOperatorTable :: [[Operator Parser (Rvalue ())]]
+rvalueOperatorTable =
+  [ [ prefix "-" (Unop () UnaryMinus)
+    , prefix "+" (Unop () UnaryPlus)
+    , prefix "!" (Unop () Not) ]
+  , [ binary "*" (Binop () Times)
+    , binary "/" (Binop () Div)
+    , binary "%" (Binop () Mod) ]
+  , [ binary "+" (Binop () Plus)
+    , binary "-" (Binop () Minus) ]
+  , [ binary "==" (Binop () Equal)
+    , binary "!=" (Binop () NotEqual)
+    , binary "<"  (Binop () Less)
+    , binary "<=" (Binop () LessEq)
+    , binary ">"  (Binop () Greater)
+    , binary ">=" (Binop () GreaterEq) ]
+  , [ binary "&&" (Binop () And) ]
+  , [ binary "||" (Binop () Or) ] ]
 
 {- Helper functions -}
 
@@ -162,59 +222,12 @@ symbol = L.symbol sc
 integer :: Parser Integer
 integer = lexeme L.decimal
 
-{- Parsers for arithmetic expressions -}
-
-pInt :: Parser Aexp
-pInt = Int <$> integer <?> "int"
-
 pRawIdentifier :: Parser String
 pRawIdentifier = lexeme
   ((:) <$> letterChar <*> many alphaNumChar <?> "identifier")
 
-pIdentifier :: Parser Aexp
-pIdentifier = Var <$> pRawIdentifier
-
 stringLiteral :: Parser String
 stringLiteral = lexeme ((char '"' >> manyTill L.charLiteral (char '"')))
-
-{- Parsers for boolean expressions -}
-
-pBexp :: Parser Bexp
-pBexp = makeExprParser pBoolTerm boolOperatorTable
-  <?> "boolean expression"
-
-pBoolTerm :: Parser Bexp
-pBoolTerm = choice
-  [ parens pBexp
-  , Boolean True  <$ (lexeme $ string "True")
-  , Boolean False <$ (lexeme $ string "False")
-  , pArithComparison ]
-
-boolOperatorTable :: [[Operator Parser Bexp]]
-boolOperatorTable =
-  [ [ prefix "!" (BoolUnaryOp Not) ]
-  , [ binary "&&" (BoolBinOp And) ]
-  , [ binary "||" (BoolBinOp Or) ]
-  , [ binary "==" (BoolBinOp BoolEqual)
-    , binary "!=" (BoolBinOp BoolNotEqual) ]
-  ]
-
-pArithComparison :: Parser Bexp
-pArithComparison =
-  do a1 <- pAexp
-     op <- pBoolComparator
-     a2 <- pAexp
-     return $ Comparison op a1 a2
-
-pBoolComparator :: Parser Comparator
-pBoolComparator = (lexeme $ choice
-  [ Less          <$ string "<"
-  , LessEq        <$ string "<="
-  , Greater       <$ string ">"
-  , GreaterEq     <$ string ">="
-  , ArithEqual    <$ string "=="
-  , ArithNotEqual <$ string "!=" ])
-  <?> "comparator"
 
 {- Helpers for sandwiched expressions -}
 

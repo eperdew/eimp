@@ -1,6 +1,8 @@
+x: int;
+
 x := 10;
 while (x > 0) {
     x := x - 1;
-    print "x is" x
-};
-print "x should be 0 :" x
+    print "x is" x;
+}
+print "x should be 0 :" x;
