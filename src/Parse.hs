@@ -39,7 +39,7 @@ parseFile filename =
         TextIO.readFile filename
             >>= return . parse pFile filename
 
-printContext :: ResultT IO Context -> IO ()
+printContext :: ResultT IO TContext -> IO ()
 printContext maybeCtx = runExceptT maybeCtx >>= print
 
 parseAndShowFile :: FilePath -> IO ()
@@ -50,7 +50,7 @@ parseAndShowFile filename =
 parseAndTypecheckFile :: FilePath -> IO ()
 parseAndTypecheckFile filename =
     let parsedFile = parseFile filename in
-    let typecheckedStmt = typecheckStmt Map.empty <$> parsedFile in
+    let typecheckedStmt = typecheckTStmt Map.empty <$> parsedFile in
     join (print <$> runExceptT typecheckedStmt)
 
 evalFile :: FilePath -> IO ()
@@ -59,11 +59,11 @@ evalFile filename =
     parsedFileIO >>= \parsedFile -> case parsedFile of
       Left error -> putStrLn "Failed to parse"
       Right stmt ->
-        let typedResult = typecheckStmt Map.empty stmt in
+        let typedResult = typecheckTStmt Map.empty stmt in
         case typedResult of
           Left error -> print error
           Right (typedStmt, _) ->
-            let evalResult = evalStmt emptyContext typedStmt in
+            let evalResult = evalTStmt Map.empty typedStmt in
             (runExceptT evalResult) >>= print
 
 pFile :: Parser (Stmt ())

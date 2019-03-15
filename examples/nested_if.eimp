@@ -14,4 +14,4 @@ if (x < 0) {
     skip;
 }
 
-assert(test == False, "Test should be false");
+assert(!test, "Test should be false");
